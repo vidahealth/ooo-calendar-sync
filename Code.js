@@ -174,7 +174,7 @@ function findEvents(user, start, end, optSince) {
     } catch (e) {
       console.error('Error retrieving events for %s: %s; skipping',
           user, e.toString());
-      continue;
+      break;
     }
     events = events.concat(response.items.filter(function(item) {
       return shouldImportEvent(user, item);
