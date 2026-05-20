@@ -1,6 +1,6 @@
 # OOO Calendar Sync
 
-Google Apps Script that syncs out-of-office events from team members' individual calendars into a shared team calendar. Based on Google's [vacation calendar sample](https://developers.google.com/apps-script/samples/automations/vacation-calendar).
+Google Apps Script that syncs out-of-office events from team members' individual calendars into a shared team calendar. Based on Google's [vacation calendar sample](https://developers.google.com/apps-script/samples/automations/vacation-calendar) — see below for differences.
 
 ## How it works
 
@@ -51,6 +51,18 @@ clasp login
 clasp pull    # download latest from Apps Script
 clasp push    # upload local changes to Apps Script. Immediately live!
 ```
+
+## Differences from the Google sample
+
+This project is based on Google's [vacation-calendar sample](https://github.com/googleworkspace/apps-script-samples/tree/main/solutions/automations/vacation-calendar). Key changes:
+
+- **Incremental sync guard** — If `lastRun` is more than 7 days old, it resets to a full sync to avoid the Calendar API's "modification time lies too far in the past" error
+- **New-user detection** — Tracks known users in script properties; when a new member joins a group, their first sync does a full scan instead of incremental
+- **Keyword filter in `shouldImportEvent`** — The original imports all `outOfOffice` events unconditionally (the `KEYWORDS` constant is defined but unused). This version actually filters events by summary keywords (`pto`, `ooo`, `out of office`)
+- **Minimum duration filter** — Only syncs OOO events that are at least 6 hours long (filters out short focus-time blocks, etc.)
+- **Error handling in `getUsersFromGroups`** — Wraps each group lookup in try/catch so one inaccessible group doesn't break the entire sync
+- **`findEvents` error handling** — Changed `continue` to `break` on API errors to prevent an infinite retry loop when pagination fails
+- **`CalendarTrigger.js`** — Experimental code for per-user calendar change triggers (not used in production due to trigger limits)
 
 ## Required OAuth scopes
 
