@@ -268,11 +268,16 @@ function getAllMembers(groupEmail) {
 function getUsersFromGroups(groupEmails) {
   let users = [];
   for (let groupEmail of groupEmails) {
-    let groupUsers = GroupsApp.getGroupByEmail(groupEmail).getUsers();
-    for (let user of groupUsers) {
-      if (!users.some(u => u.getEmail() === user.getEmail())) {
-        users.push(user);
+    try {
+      let groupUsers = GroupsApp.getGroupByEmail(groupEmail).getUsers();
+      for (let user of groupUsers) {
+        if (!users.some(u => u.getEmail() === user.getEmail())) {
+          users.push(user);
+        }
       }
+    } catch (e) {
+      console.error('Could not retrieve members for group %s: %s; skipping',
+          groupEmail, e.toString());
     }
   }
   return users;
