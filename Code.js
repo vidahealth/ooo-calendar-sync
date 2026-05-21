@@ -27,13 +27,10 @@ const TEAM_CALENDAR_ID = 'c_hhgpsc5176s57777vtulrpgorc@group.calendar.google.com
 const GROUP_EMAIL = ['pde@vida.com', 'dev-offshore@vida.com'];
 
 const KEYWORDS = ['pto', 'ooo', 'out of office'];
-const MONTHS_IN_ADVANCE = 3;
 
-// Define a safe threshold (e.g., 20 days) to avoid the API error "API call to calendar.events.list failed with error: The requested minimum modification time lies too far in the past"
-const MAX_INCREMENTAL_DAYS = 7;
-
-const LAST_RUN_KEY = 'lastRun'
-const EXISTING_USERS_KEY = 'existing_users'
+const SYNC_TOKEN_PREFIX = 'syncToken_'
+const FULL_SYNC_INTERVAL_KEY = 'lastFullSync'
+const FULL_SYNC_INTERVAL_DAYS = 7
 
 /**
  * Sets up the script to run automatically every hour.
@@ -53,30 +50,8 @@ function setup() {
  * 'vacation' or 'out of office' events to the team calendar.
  */
 function sync() {
-  // Defines the calendar event date range to search.
   let today = new Date();
-  let maxDate = new Date();
-  maxDate.setMonth(maxDate.getMonth() + MONTHS_IN_ADVANCE);
 
-  // Determines the time the the script was last run.
-  let lastRun = PropertiesService.getScriptProperties().getProperty(LAST_RUN_KEY);
-  lastRun = lastRun ? new Date(lastRun) : null;
-  // lastRun = null; // for testing
-
-  // Calculate difference in days
-  const diffTime = Math.abs(today - lastRun);
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-  if (diffDays > MAX_INCREMENTAL_DAYS) {
-    console.log("lastRun was too old (%s days ago, %s)", diffDays, lastRun)
-    lastRun = null;
-  }
-  console.log("only searching events modified since %s", lastRun)
-
-  let existing_users = PropertiesService.getScriptProperties().getProperty(EXISTING_USERS_KEY);
-  existing_users = existing_users ? existing_users.split(",") : [];
-
-  // Gets the list of users in the Google Group.
   let users;
   if (Array.isArray(GROUP_EMAIL)) {
     users = getUsersFromGroups(GROUP_EMAIL);
@@ -84,29 +59,43 @@ function sync() {
     users = getAllMembers(GROUP_EMAIL);
   }
 
-  // For each user, finds events having one or more of the keywords in the event
-  // summary in the specified date range. Imports each of those to the team
-  // calendar.
+  let props = PropertiesService.getScriptProperties();
+
+  let lastFullSync = props.getProperty(FULL_SYNC_INTERVAL_KEY);
+  let forceFullSync = false;
+  if (!lastFullSync || daysSince(new Date(lastFullSync)) >= FULL_SYNC_INTERVAL_DAYS) {
+    console.log('Forcing full sync (last was %s)', lastFullSync || 'never');
+    forceFullSync = true;
+  }
+
   let count = 0;
   users.forEach(function(user) {
-    let username = user.getEmail().split('@')[0];
-    let lastRunForUser = lastRun;
-    if (!existing_users.includes(username)) {
-      console.log("new user %s detected", username);
-      lastRunForUser = null;
-      existing_users.push(username);
-      // makeTriggerForCalendarId(user.getEmail()); // we were failing for having too many triggers :(
-    }
-    console.log('Checking events for %s', username);
-    let events = findEvents(user, today, maxDate, lastRunForUser);
-    events.forEach(function(event) {
-      importEvent(username, event);
-      count++;
-    }); // End foreach event.
-  }); // End foreach user.
+    let email = user.getEmail();
+    let username = email.split('@')[0];
+    let tokenKey = SYNC_TOKEN_PREFIX + email;
+    let syncToken = forceFullSync ? null : props.getProperty(tokenKey);
 
-  PropertiesService.getScriptProperties().setProperty(LAST_RUN_KEY, today);
-  PropertiesService.getScriptProperties().setProperty(EXISTING_USERS_KEY, existing_users.join(","));
+    console.log('Checking events for %s (%s)', username, syncToken ? 'incremental' : 'full sync');
+    try {
+      let result = syncToken
+          ? incrementalSync(user, syncToken)
+          : fullSync(user, today);
+      result.events.forEach(function(event) {
+        importEvent(username, event);
+        count++;
+      });
+
+      if (result.nextSyncToken) {
+        props.setProperty(tokenKey, result.nextSyncToken);
+      }
+    } catch (e) {
+      console.error('Failed to sync events for %s: %s; skipping', username, e.toString());
+    }
+  });
+
+  if (forceFullSync) {
+    props.setProperty(FULL_SYNC_INTERVAL_KEY, today.toISOString());
+  }
   console.log('Imported ' + count + ' events');
 }
 
@@ -142,46 +131,74 @@ function importEvent(username, event) {
 }
 
 /**
- * In a given user's calendar, looks for occurrences of the given keyword
- * in events within the specified date range and returns any such events
- * found.
+ * Full sync: fetches all future OOO events for a user from today onward.
+ * No timeMax — captures everything so the sync token won't have blind spots.
  * @param {Session.User} user The user to retrieve events for.
- * @param {Date} start The starting date of the range to examine.
- * @param {Date} end The ending date of the range to examine.
- * @param {Date} optSince A date indicating the last time this script was run.
- * @return {Calendar.Event[]} An array of calendar events.
+ * @param {Date} start The starting date (typically today).
+ * @return {{events: Calendar.Event[], nextSyncToken: string}}
  */
-function findEvents(user, start, end, optSince) {
+function fullSync(user, start) {
   let params = {
     timeMin: formatDateAsRFC3339(start),
-    timeMax: formatDateAsRFC3339(end),
     showDeleted: true,
     eventTypes: ["outOfOffice"],
   };
-  if (optSince) {
-    // This prevents the script from examining events that have not been
-    // modified since the specified date (that is, the last time the
-    // script was run).
-    params.updatedMin = formatDateAsRFC3339(optSince);
+  return fetchEvents(user, params);
+}
+
+/**
+ * Incremental sync: fetches only events that changed since the last sync.
+ * Falls back to a full sync if the token has expired (410 Gone).
+ * @param {Session.User} user The user to retrieve events for.
+ * @param {string} syncToken Token from a previous sync response.
+ * @return {{events: Calendar.Event[], nextSyncToken: string}}
+ */
+function incrementalSync(user, syncToken) {
+  let params = {
+    syncToken: syncToken,
+    showDeleted: true,
+  };
+  try {
+    return fetchEvents(user, params);
+  } catch (e) {
+    if (e.toString().indexOf('410') !== -1) {
+      console.log('Sync token expired for %s, falling back to full sync', user.getEmail());
+      return fullSync(user, new Date());
+    }
+    throw e;
   }
-  let pageToken = null;
+}
+
+/**
+ * Paginates through Calendar.Events.list and returns matching events
+ * along with the sync token for next time.
+ * @param {Session.User} user The user to retrieve events for.
+ * @param {object} params Parameters for Calendar.Events.list.
+ * @return {{events: Calendar.Event[], nextSyncToken: string}}
+ */
+function fetchEvents(user, params) {
   let events = [];
+  let nextSyncToken = null;
+  let pageToken = null;
   do {
     params.pageToken = pageToken;
     let response;
     try {
       response = Calendar.Events.list(user.getEmail(), params);
     } catch (e) {
-      console.error('Error retrieving events for %s: %s; skipping',
+      console.error('Error retrieving events for %s: %s',
           user, e.toString());
-      break;
+      throw e;
     }
     events = events.concat(response.items.filter(function(item) {
       return shouldImportEvent(user, item);
     }));
     pageToken = response.nextPageToken;
+    if (response.nextSyncToken) {
+      nextSyncToken = response.nextSyncToken;
+    }
   } while (pageToken);
-  return events;
+  return { events: events, nextSyncToken: nextSyncToken };
 }
 
 /**
@@ -232,6 +249,10 @@ function shouldImportEvent(user, event) {
  */
 function formatDateAsRFC3339(date) {
   return Utilities.formatDate(date, 'UTC', 'yyyy-MM-dd\'T\'HH:mm:ssZ');
+}
+
+function daysSince(date) {
+  return Math.floor((new Date() - date) / (1000 * 60 * 60 * 24));
 }
 
 /**
