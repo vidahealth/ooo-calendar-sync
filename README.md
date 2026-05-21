@@ -60,6 +60,10 @@ This project is based on Google's [vacation-calendar sample](https://github.com/
 - **New-user detection** — Tracks known users in script properties; when a new member joins a group, their first sync does a full scan instead of incremental
 - **Keyword filter in `shouldImportEvent`** — The original imports all `outOfOffice` events unconditionally (the `KEYWORDS` constant is defined but unused). This version actually filters events by summary keywords (`pto`, `ooo`, `out of office`)
 - **Minimum duration filter** — Only syncs OOO events that are at least 6 hours long (filters out short focus-time blocks, etc.)
+- **Attendee acceptance check** — For events the user didn't create, only imports if the user has accepted the invite
+- **`delete event.sequence`** in `importEvent` — Strips the sequence number before importing to avoid conflicts with the target calendar
+- **Removed `ONLY_DIRECT_MEMBERS` flag** — The sample supports toggling between direct/indirect member lookup; this version always uses indirect (recursive) lookup
+- **Explicit OAuth scopes and Calendar advanced service** — The sample's manifest has no scopes or advanced services declared; this version pins them in `appsscript.json`
 - **Error handling in `getUsersFromGroups`** — Wraps each group lookup in try/catch so one inaccessible group doesn't break the entire sync
 - **`findEvents` error handling** — Changed `continue` to `break` on API errors to prevent an infinite retry loop when pagination fails
 - **`CalendarTrigger.js`** — Experimental code for per-user calendar change triggers (not used in production due to trigger limits)
