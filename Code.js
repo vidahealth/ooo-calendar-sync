@@ -225,7 +225,7 @@ function shouldImportEvent(user, event) {
 }
 
 /**
- * Returns an RFC3339 formated date String corresponding to the given
+ * Returns an RFC3339 formatted date String corresponding to the given
  * Date object.
  * @param {Date} date a Date.
  * @return {string} a formatted date string.
